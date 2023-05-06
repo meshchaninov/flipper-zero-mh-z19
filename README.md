@@ -38,4 +38,5 @@ GND <-> GND (8 pin)
 PWM <-> A6 (3 pin)
 ```
 ![setup](.github/assets/setup2.jpeg)
-- Open application
+- Open in flipper zero:
+Applications -> GPIO -> [MH-Z19] CO2 sensor

@@ -22,7 +22,7 @@ git clone --recursive https://github.com/flipperdevices/flipperzero-firmware.git
 mv flipper-zero-mh-z19/mh_z19 flipperzero-firmware/application_user
 ```
 - Connect flipper zero via USB to your computer
-- Build firmware
+- Build and flash to device firmware
 ```bash
 cd flipperzero-firmware
 ./fbt

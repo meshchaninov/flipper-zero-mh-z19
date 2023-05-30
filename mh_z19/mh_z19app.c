@@ -142,10 +142,11 @@ void mh_z19app_draw_callback(Canvas *canvas, void *ctx)
         break;
     }
 
+    const Icon *co2_icon = &I_co2;
+
     canvas_draw_icon(canvas, 9, 7, icon);
 
-    canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 60, 19, "CO2");
+    canvas_draw_icon(canvas, 59, 8, co2_icon);
 
     furi_string_printf(strbuf, "%ld", app->co2_ppm);
     canvas_set_font(canvas, FontBigNumbers);

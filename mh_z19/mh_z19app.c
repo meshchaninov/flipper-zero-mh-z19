@@ -9,25 +9,35 @@
 #include <notification/notification_messages.h>
 #include <assets_icons.h>
 
-typedef enum {
+typedef enum
+{
     GreenStatus,
     YellowStatus,
     RedStatus,
 } StatusPPM;
 
-struct MHZ19App {
-    Gui* gui;
-    ViewPort* view_port;
-    FuriMessageQueue* event_queue;
-    FuriMutex* mutex;
-    NotificationApp* notifications;
+typedef enum
+{
+    RANGE_2000 = 2000,
+    RANGE_5000 = 5000
+} SensorRange;
+
+struct MHZ19App
+{
+    Gui *gui;
+    ViewPort *view_port;
+    FuriMessageQueue *event_queue;
+    FuriMutex *mutex;
+    NotificationApp *notifications;
 
     bool have_5v;
-    bool start_screen;
+    int32_t current_page;
 
     StatusPPM status_ppm;
 
-    const GpioPin* input_pin;
+    SensorRange sensor_range;
+
+    const GpioPin *input_pin;
 
     int32_t co2_ppm;
 };
@@ -63,13 +73,15 @@ const NotificationSequence red_led_sequence = {
     NULL,
 };
 
-static void mh_z19app_draw_callback(Canvas* canvas, void* ctx) {
+void mh_z19app_draw_callback(Canvas *canvas, void *ctx)
+{
     furi_assert(ctx);
 
-    MHZ19App* app = ctx;
+    MHZ19App *app = ctx;
     canvas_clear(canvas);
 
-    if(!app->have_5v) {
+    if (!app->have_5v)
+    {
         canvas_set_font(canvas, FontPrimary);
         elements_multiline_text_aligned(
             canvas,
@@ -79,7 +91,9 @@ static void mh_z19app_draw_callback(Canvas* canvas, void* ctx) {
             AlignTop,
             "5V on GPIO must be\nenabled, or USB must\nbe connected.");
         return;
-    } else if(app->start_screen) {
+    }
+    else if (app->current_page == 0)
+    {
         canvas_set_font(canvas, FontPrimary);
         elements_multiline_text_aligned(
             canvas,
@@ -90,16 +104,26 @@ static void mh_z19app_draw_callback(Canvas* canvas, void* ctx) {
             "Connect sensor MH-Z19 to pins:\n5V -> 1\nGND -> 8\nPWM -> 3\nPress center button...");
         return;
     }
+    else if (app->current_page == 1)
+    {
+        canvas_set_font(canvas, FontPrimary);
+        elements_multiline_text_aligned(
+            canvas,
+            4,
+            1,
+            AlignLeft,
+            AlignTop,
+            "Select sensor measuring range by arrows.\nAvailable:\n\t- 0-2000ppm\n\t- 0-5000ppm\nPress center button...");
+        return;
+    }
 
-    int32_t co2 = app->co2_ppm;
-    FuriString* strbuf = furi_string_alloc();
+    FuriString *strbuf = furi_string_alloc();
 
-    furi_string_printf(strbuf, "%ld", co2);
+    const Icon *icon;
+    FuriString *status_text = furi_string_alloc();
 
-    const Icon* icon;
-    FuriString* status_text = furi_string_alloc();
-
-    switch(app->status_ppm) {
+    switch (app->status_ppm)
+    {
     case GreenStatus:
         icon = &I_passport_okay1_46x49;
         furi_string_set_str(status_text, "it's OK!");
@@ -123,6 +147,7 @@ static void mh_z19app_draw_callback(Canvas* canvas, void* ctx) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 60, 19, "CO2");
 
+    furi_string_printf(strbuf, "%ld", app->co2_ppm);
     canvas_set_font(canvas, FontBigNumbers);
     canvas_draw_str(canvas, 60, 40, furi_string_get_cstr(strbuf));
 
@@ -132,21 +157,28 @@ static void mh_z19app_draw_callback(Canvas* canvas, void* ctx) {
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 110, 40, "ppm");
 
+    furi_string_printf(strbuf, "%d", app->sensor_range);
+    canvas_set_font(canvas, FontKeyboard);
+    canvas_draw_str(canvas, 104, 8, furi_string_get_cstr(strbuf));
+
     furi_string_free(strbuf);
     furi_string_free(status_text);
 }
 
-static void mh_z19app_input_callback(InputEvent* input_event, void* ctx) {
+void mh_z19app_input_callback(InputEvent *input_event, void *ctx)
+{
     furi_assert(ctx);
-    FuriMessageQueue* event_queue = ctx;
+    FuriMessageQueue *event_queue = ctx;
     furi_message_queue_put(event_queue, input_event, FuriWaitForever);
 }
 
-MHZ19App* mh_z19app_alloc() {
-    MHZ19App* app = (MHZ19App*)malloc(sizeof(MHZ19App));
+MHZ19App *mh_z19app_alloc()
+{
+    MHZ19App *app = (MHZ19App *)malloc(sizeof(MHZ19App));
 
     app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-    if(!app->mutex) {
+    if (!app->mutex)
+    {
         FURI_LOG_E("MH-Z19", "cannot create mutex\r\n");
         free(app);
         return NULL;
@@ -164,14 +196,18 @@ MHZ19App* mh_z19app_alloc() {
 
     // Enable 5v power, multiple attempts to avoid issues with power chip protection false triggering
     uint8_t attempts = 0;
-    while(!furi_hal_power_is_otg_enabled() && attempts++ < 5) {
+    while (!furi_hal_power_is_otg_enabled() && attempts++ < 5)
+    {
         furi_hal_power_enable_otg();
         furi_delay_ms(10);
     }
 
-    if(furi_hal_power_is_otg_enabled() || furi_hal_power_is_charging()) {
+    if (furi_hal_power_is_otg_enabled() || furi_hal_power_is_charging())
+    {
         app->have_5v = true;
-    } else {
+    }
+    else
+    {
         app->have_5v = false;
     }
 
@@ -185,10 +221,12 @@ MHZ19App* mh_z19app_alloc() {
     return app;
 }
 
-void mh_z19app_free(MHZ19App* app) {
+void mh_z19app_free(MHZ19App *app)
+{
     furi_assert(app);
 
-    if(furi_hal_power_is_otg_enabled()) {
+    if (furi_hal_power_is_otg_enabled())
+    {
         furi_hal_power_disable_otg();
     }
 
@@ -207,50 +245,86 @@ void mh_z19app_free(MHZ19App* app) {
     free(app);
 }
 
-void mh_z19app_init(MHZ19App* app) {
+void mh_z19app_init(MHZ19App *app)
+{
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     app->co2_ppm = 0;
     app->status_ppm = GreenStatus;
-    app->start_screen = true;
+    app->current_page = 0;
+    app->sensor_range = RANGE_2000;
     app->have_5v = true;
     notification_message(app->notifications, &green_led_sequence);
     furi_mutex_release(app->mutex);
 }
 
-int32_t
-    calculate_ppm(int32_t* prevVal, int32_t val, int32_t* th, int32_t* tl, int32_t* h, int32_t* l) {
+int32_t calculate_ppm(
+    int32_t *prevVal,
+    int32_t val,
+    int32_t *th,
+    int32_t *tl,
+    int32_t *h,
+    int32_t *l,
+    SensorRange range)
+{
     int32_t tt = furi_get_tick();
-    if(val == 1) {
-        if(val != *prevVal) {
+    if (val == 1)
+    {
+        if (val != *prevVal)
+        {
             *h = tt;
             *tl = *h - *l;
             *prevVal = val;
         }
-    } else {
-        if(val != *prevVal) {
+    }
+    else
+    {
+        if (val != *prevVal)
+        {
             *l = tt;
             *th = *l - *h;
             *prevVal = val;
-            return 2000 * (*th - 2) / (*th + *tl - 4);
+            return range * (*th - 2) / (*th + *tl - 4);
         }
     }
     return -1;
 }
 
-void send_notification_if_needed(MHZ19App* app, int32_t ppm) {
-    if(ppm > 0) {
-        if(ppm > 1000) {
-            if(app->status_ppm != RedStatus) {
+void change_sensor_range(MHZ19App *app)
+{
+    if (app->sensor_range == RANGE_2000)
+    {
+        app->sensor_range = RANGE_5000;
+    }
+    else
+    {
+        app->sensor_range = RANGE_2000;
+    }
+}
+
+void send_notification_if_needed(MHZ19App *app, int32_t ppm)
+{
+    if (ppm > 0)
+    {
+        if (ppm > 1000)
+        {
+            if (app->status_ppm != RedStatus)
+            {
                 notification_message(app->notifications, &red_led_sequence);
                 app->status_ppm = RedStatus;
             }
-        } else if(ppm > 800) {
-            if(app->status_ppm != YellowStatus) {
+        }
+        else if (ppm > 800)
+        {
+            if (app->status_ppm != YellowStatus)
+            {
                 notification_message(app->notifications, &yellow_led_sequence);
                 app->status_ppm = YellowStatus;
             }
-        } else {
-            if(app->status_ppm != GreenStatus) {
+        }
+        else
+        {
+            if (app->status_ppm != GreenStatus)
+            {
                 notification_message(app->notifications, &green_led_sequence);
                 app->status_ppm = GreenStatus;
             }
@@ -258,10 +332,12 @@ void send_notification_if_needed(MHZ19App* app, int32_t ppm) {
     }
 }
 
-int32_t mh_z19_app(void* p) {
+int32_t mh_z19_app(void *p)
+{
     UNUSED(p);
-    MHZ19App* app = mh_z19app_alloc();
-    if(!app) {
+    MHZ19App *app = mh_z19app_alloc();
+    if (!app)
+    {
         FURI_LOG_E("MH-Z19", "cannot create app\r\n");
         return -1;
     }
@@ -276,21 +352,31 @@ int32_t mh_z19_app(void* p) {
     int32_t l = 0;
     int32_t ppm = 0;
 
-    for(bool processing = true; processing;) {
+    for (bool processing = true; processing;)
+    {
         furi_mutex_acquire(app->mutex, FuriWaitForever);
-        ppm = calculate_ppm(&prevVal, furi_hal_gpio_read(app->input_pin), &th, &tl, &h, &l);
-        if(ppm > 0) {
+        ppm = calculate_ppm(
+            &prevVal, furi_hal_gpio_read(app->input_pin), &th, &tl, &h, &l, app->sensor_range);
+        if (ppm > 0)
+        {
             app->co2_ppm = ppm;
         }
         send_notification_if_needed(app, app->co2_ppm);
-        if(furi_message_queue_get(app->event_queue, &event, 100) == FuriStatusOk) {
-            if(event.type == InputTypeShort) {
-                switch(event.key) {
+        if (furi_message_queue_get(app->event_queue, &event, 100) == FuriStatusOk)
+        {
+            if (event.type == InputTypeShort)
+            {
+                switch (event.key)
+                {
                 case InputKeyBack:
                     processing = false;
                     break;
                 case InputKeyOk:
-                    app->start_screen = false;
+                    app->current_page++;
+                    break;
+                case InputKeyLeft:
+                case InputKeyRight:
+                    change_sensor_range(app);
                     break;
                 default:
                     break;

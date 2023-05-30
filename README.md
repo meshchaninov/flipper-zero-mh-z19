@@ -2,7 +2,6 @@
 Application for measuring carbon dioxide (CO2) with mh-z19 sensor and Flipper zero
 
 ![Ok ppm](.github/assets/Ok.png)
-![Bad ppm](.github/assets/bad.png)
 ![Very bad ppm](.github/assets/Very.png)
 ![Setup](.github/assets/setup.png)
 

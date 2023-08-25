@@ -1,5 +1,5 @@
 App(
-    appid="mh_z19",
+    appid="meshchaninov/mh_z19_1.0",
     name="[MH-Z19] CO2 sensor",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="mh_z19_app",

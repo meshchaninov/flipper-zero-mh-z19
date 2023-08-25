@@ -1,7 +1,6 @@
 
 #include "mh_z19_icons.h"
 
-#include <assets_icons.h>
 #include <furi.h>
 #include <furi_hal.h>
 #include <gui/elements.h>

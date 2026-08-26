@@ -16,6 +16,14 @@ typedef enum {
 
 typedef enum { RANGE_2000 = 2000, RANGE_5000 = 5000 } SensorRange;
 
+typedef struct {
+    volatile uint32_t last_edge_cycles;
+    volatile uint32_t high_cycles;
+    volatile uint32_t low_cycles;
+    volatile uint32_t sample_sequence;
+    volatile bool started;
+} PwmCapture;
+
 struct MHZ19App {
     Gui* gui;
     ViewPort* view_port;
@@ -31,6 +39,8 @@ struct MHZ19App {
     SensorRange sensor_range;
 
     const GpioPin* input_pin;
+
+    PwmCapture pwm_capture;
 
     int32_t co2_ppm;
 };
@@ -160,6 +170,30 @@ void mh_z19app_input_callback(InputEvent* input_event, void* ctx) {
     furi_message_queue_put(event_queue, input_event, FuriWaitForever);
 }
 
+static void mh_z19app_pwm_callback(void* ctx) {
+    MHZ19App* app = ctx;
+    PwmCapture* capture = &app->pwm_capture;
+    const uint32_t now = DWT->CYCCNT;
+
+    if(!capture->started) {
+        capture->last_edge_cycles = now;
+        capture->started = true;
+        return;
+    }
+
+    const uint32_t duration = now - capture->last_edge_cycles;
+    capture->last_edge_cycles = now;
+
+    if(furi_hal_gpio_read(app->input_pin)) {
+        // A rising edge ends the low part of the PWM period.
+        capture->low_cycles = duration;
+    } else if(capture->low_cycles != 0) {
+        // Publish a sample only after both parts of the PWM period are available.
+        capture->high_cycles = duration;
+        capture->sample_sequence++;
+    }
+}
+
 MHZ19App* mh_z19app_alloc() {
     MHZ19App* app = (MHZ19App*)malloc(sizeof(MHZ19App));
 
@@ -196,7 +230,14 @@ MHZ19App* mh_z19app_alloc() {
 
     app->input_pin = &gpio_ext_pa6;
 
-    furi_hal_gpio_init(app->input_pin, GpioModeInput, GpioPullUp, GpioSpeedVeryHigh);
+    app->pwm_capture.last_edge_cycles = 0;
+    app->pwm_capture.high_cycles = 0;
+    app->pwm_capture.low_cycles = 0;
+    app->pwm_capture.sample_sequence = 0;
+    app->pwm_capture.started = false;
+
+    furi_hal_gpio_init(app->input_pin, GpioModeInterruptRiseFall, GpioPullUp, GpioSpeedVeryHigh);
+    furi_hal_gpio_add_int_callback(app->input_pin, mh_z19app_pwm_callback, app);
 
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
     furi_mutex_release(app->mutex);
@@ -206,6 +247,9 @@ MHZ19App* mh_z19app_alloc() {
 
 void mh_z19app_free(MHZ19App* app) {
     furi_assert(app);
+
+    furi_hal_gpio_remove_int_callback(app->input_pin);
+    furi_hal_gpio_init_simple(app->input_pin, GpioModeAnalog);
 
     if(furi_hal_power_is_otg_enabled()) {
         furi_hal_power_disable_otg();
@@ -237,30 +281,32 @@ void mh_z19app_init(MHZ19App* app) {
     furi_mutex_release(app->mutex);
 }
 
-int32_t calculate_ppm(
-    int32_t* prevVal,
-    int32_t val,
-    int32_t* th,
-    int32_t* tl,
-    int32_t* h,
-    int32_t* l,
-    SensorRange range) {
-    int32_t tt = furi_get_tick();
-    if(val == 1) {
-        if(val != *prevVal) {
-            *h = tt;
-            *tl = *h - *l;
-            *prevVal = val;
-        }
-    } else {
-        if(val != *prevVal) {
-            *l = tt;
-            *th = *l - *h;
-            *prevVal = val;
-            return range * (*th - 2) / (*th + *tl - 4);
-        }
+int32_t calculate_ppm(MHZ19App* app, uint32_t* last_sample_sequence) {
+    uint32_t high_cycles;
+    uint32_t low_cycles;
+    uint32_t sample_sequence;
+
+    FURI_CRITICAL_ENTER();
+    high_cycles = app->pwm_capture.high_cycles;
+    low_cycles = app->pwm_capture.low_cycles;
+    sample_sequence = app->pwm_capture.sample_sequence;
+    FURI_CRITICAL_EXIT();
+
+    if((sample_sequence == *last_sample_sequence) || (sample_sequence == 0)) {
+        return -1;
     }
-    return -1;
+    *last_sample_sequence = sample_sequence;
+
+    // The MH-Z19 datasheet defines C = range * (TH - 2ms) / (TH + TL - 4ms).
+    const uint32_t dead_cycles = furi_hal_cortex_instructions_per_microsecond() * 2000U;
+    if((high_cycles <= dead_cycles) || (low_cycles <= dead_cycles)) {
+        return -1;
+    }
+
+    const uint32_t active_high_cycles = high_cycles - dead_cycles;
+    const uint32_t active_period_cycles = high_cycles + low_cycles - (2U * dead_cycles);
+
+    return (int32_t)(((uint64_t)app->sensor_range * active_high_cycles) / active_period_cycles);
 }
 
 void change_sensor_range(MHZ19App* app) {
@@ -304,16 +350,12 @@ int32_t mh_z19_app(void* p) {
 
     InputEvent event;
 
-    int32_t prevVal = 0;
-
-    int32_t th, tl, h = 0;
-    int32_t l = 0;
+    uint32_t last_sample_sequence = 0;
     int32_t ppm = 0;
 
     for(bool processing = true; processing;) {
         furi_mutex_acquire(app->mutex, FuriWaitForever);
-        ppm = calculate_ppm(
-            &prevVal, furi_hal_gpio_read(app->input_pin), &th, &tl, &h, &l, app->sensor_range);
+        ppm = calculate_ppm(app, &last_sample_sequence);
         if(ppm > 0) {
             app->co2_ppm = ppm;
         }
